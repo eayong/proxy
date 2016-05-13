@@ -6,7 +6,7 @@
 class SslSocket : public Socket
 {
 public:
-    SslSocket(int fd, SSL_CTX *sslCtx);
+    SslSocket(int fd, int type, SSL_CTX *sslCtx);
     ~SslSocket();
 
 public:
@@ -15,6 +15,9 @@ public:
     
     int Send(const char *data, uint32_t len);
     int Recv(char *data, uint32_t len);
+    int Handshake();
+    void ShowCertificate();
 };
 
 #endif // __PROXY_SOCK_SSL_H__
+

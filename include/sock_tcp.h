@@ -9,7 +9,7 @@ using namespace std;
 class TcpSocket : public Socket
 {
 public:
-    TcpSocket(int fd);
+    TcpSocket(int fd, int type);
     ~TcpSocket();
 
 public:

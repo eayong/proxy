@@ -3,8 +3,12 @@
 
 using namespace std;
 
-string g_cert_path = "./proxy.pem";
-string g_key_path;
+extern string g_cert_path;
+extern string g_key_path;
+extern FILE *g_logFp;
+
+extern void PrintLog(FILE *fp, const char *format...);
+
 
 SslContext::SslContext(SslVersion type)
     :m_cliCtx(NULL), m_servCtx(NULL), m_type(type)
@@ -35,10 +39,10 @@ int SslContext::InitClient()
     {
     case VERSION_SSL_V1:
     case VERSION_SSL_V2:
-        printf("This version is not allowed...\n");
+        PrintLog(g_logFp, "This version is not allowed...\n");
         break;
     case VERSION_SSL_V3:
-        printf("It is not recommended to use this version...\n");
+        PrintLog(g_logFp, "It is not recommended to use this version...\n");
         m_cliCtx = SSL_CTX_new(SSLv3_client_method());
         break;
     case VERSION_TLS_V1_0:
@@ -51,12 +55,12 @@ int SslContext::InitClient()
         m_cliCtx = SSL_CTX_new(TLSv1_2_client_method());
         break;
     default:
-        printf("Unkown ssl version %d.\n", m_type);
+        PrintLog(g_logFp, "Unkown ssl version %d.\n", m_type);
         break;
     }
     if (m_cliCtx == NULL)
     {
-        printf("SSL_CTX_new client context error.\n");
+        PrintLog(g_logFp, "SSL_CTX_new client context error.\n");
         return -1;
     }
 
@@ -69,10 +73,10 @@ int SslContext::InitServer()
     {
     case VERSION_SSL_V1:
     case VERSION_SSL_V2:
-        printf("This version is not allowed...\n");
+        PrintLog(g_logFp, "This version is not allowed...\n");
         break;
     case VERSION_SSL_V3:
-        printf("It is not recommended to use this version...\n");
+        PrintLog(g_logFp, "It is not recommended to use this version...\n");
         m_servCtx = SSL_CTX_new(SSLv3_server_method());
         break;
     case VERSION_TLS_V1_0:
@@ -85,12 +89,12 @@ int SslContext::InitServer()
         m_servCtx = SSL_CTX_new(TLSv1_2_server_method());
         break;
     default:
-        printf("Unkown ssl version %d.\n", m_type);
+        PrintLog(g_logFp, "Unkown ssl version %d.\n", m_type);
         break;
     }
     if (m_servCtx == NULL)
     {
-        printf("SSL_CTX_new server context error.\n");
+        PrintLog(g_logFp, "SSL_CTX_new server context error.\n");
         return -1;
     }
     
@@ -108,7 +112,7 @@ int SslContext::InitServer()
 
     if (!SSL_CTX_check_private_key(m_servCtx))
     {
-        fprintf(stderr,"Private key does not match the certificate public key\n");
+        PrintLog(g_logFp, "Private key does not match the certificate public key\n");
         return -1;
     }
     return 0;

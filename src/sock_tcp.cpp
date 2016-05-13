@@ -1,7 +1,7 @@
 #include "sock_tcp.h"
 
-TcpSocket::TcpSocket(int fd)
-    : Socket(fd)
+TcpSocket::TcpSocket(int fd, int type)
+    : Socket(fd, type)
 {
     
 }
@@ -21,3 +21,4 @@ int TcpSocket::Recv(char * data, uint32_t len)
 
     return 0;
 }
+

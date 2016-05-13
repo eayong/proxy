@@ -1,21 +1,15 @@
-#include <fcntl.h>
 #include <signal.h>
 #include "proxy.h"
 
 #define DEFAULT_BUFFER_SIZE 65535
 
-string g_proxy_host = "172.0.0.1";
-int g_proxy_port = 5061;
+extern string g_proxy_host;
+extern int g_proxy_port;
+extern string g_data_file;
+extern FILE * g_logFp;
+extern FILE *g_dataFp;
 
-static int SetNonBlocking(int fd)
-{
-    int flags;
-    if ((flags = fcntl(fd, F_GETFL, 0)) == -1)
-    {
-        flags = 0;
-    }
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
+extern void PrintLog(FILE *fp, const char *format...);
 
 static void OnReadServer(int fd, short event, void* arg)
 {
@@ -30,26 +24,22 @@ static void OnReadServer(int fd, short event, void* arg)
 
     if (len <= 0)
     {
-        delete pair->local;
-        delete pair->remote;
-        delete pair;
-        event_del(&pair->local_ev);
-        event_del(&pair->remote_ev);
-        pair = NULL;
+        Proxy::DelSocketPair(pair);
         return;
     }
 
-    printf("recv remote: %s\n", data);
+    if (g_dataFp)
+    {
+        fprintf(g_dataFp, "recv remote:\n");
+        fwrite(data, len, 1, g_dataFp);
+        fflush(g_dataFp);
+    }
+    PrintLog(g_logFp, "recv remote: %s\n", data);
     
     len = pair->local->Send(data, len);
     if (len <= 0)
     {
-        delete pair->local;
-        delete pair->remote;
-        event_del(&pair->local_ev);
-        event_del(&pair->remote_ev);
-        delete pair;
-        pair = NULL;
+        Proxy::DelSocketPair(pair);
         return;
     }
 }
@@ -67,26 +57,22 @@ static void OnReadClient(int fd, short event, void* arg)
 
     if (len <= 0)
     {
-        delete pair->local;
-        delete pair->remote;
-        delete pair;
-        event_del(&pair->local_ev);
-        event_del(&pair->remote_ev);
-        pair = NULL;
+        Proxy::DelSocketPair(pair);
         return;
     }
-
-    printf("recv local: %s\n", data);
+    
+    if (g_dataFp)
+    {
+        fprintf(g_dataFp, "recv local:\n");
+        fwrite(data, len, 1, g_dataFp);
+        fflush(g_dataFp);
+    }
+    PrintLog(g_logFp, "recv local: %s\n", data);
 
     len = pair->remote->Send(data, len);
     if (len <= 0)
     {
-        delete pair->local;
-        delete pair->remote;
-        delete pair;
-        event_del(&pair->local_ev);
-        event_del(&pair->remote_ev);
-        pair = NULL;
+        Proxy::DelSocketPair(pair);
         return;
     }
 }
@@ -101,22 +87,30 @@ static void SignalCallBack(int sig, short events, void *user_data)
 static void OnAccept(int fd, short event, void* arg)
 {
     Proxy *proxy = (Proxy *)arg;
-    struct sockaddr_in cli_addr;
-    socklen_t sin_size = sizeof(struct sockaddr_in);
     Socket *local = proxy->GetServer()->Accept();
     if (local == NULL)
     {
-        printf("accept failed with fd %d, reason: %s\n", fd, strerror(errno));
+        PrintLog(g_logFp, "accept failed with fd %d, reason: %s\n", fd, strerror(errno));
         return;
     }
 #ifdef HAS_OPENSSL
+    int ret = local->Handshake();
+    switch (ret)
+    {
+    case SOCKET_ERR_NONE:
+        break;
+    default:
+        delete local;
+        return;
+    }
+    
     ClientSocket *remote = new ClientSocket(g_proxy_host, g_proxy_port, proxy->GetSslCtx()->GetCliCtx());
 #else
     ClientSocket *remote = new ClientSocket(g_proxy_host, g_proxy_port);
 #endif // HAS_OPENSSL
     if (remote == NULL)
     {
-        printf("new remote ssl socket failed.\n");
+        PrintLog(g_logFp, "new remote ssl socket failed.\n");
         delete local;
         return;
     }
@@ -127,6 +121,19 @@ static void OnAccept(int fd, short event, void* arg)
         delete remote;
         return;
     }
+    
+#ifdef HAS_OPENSSL
+    ret = remote->GetSocket()->Handshake();
+    switch (ret)
+    {
+    case SOCKET_ERR_NONE:
+        break;
+    default:
+        delete local;
+        delete remote;
+        return;
+    }
+#endif
 
     SocketPair *pair = new SocketPair();
     if (pair == NULL)
@@ -139,20 +146,21 @@ static void OnAccept(int fd, short event, void* arg)
     pair->local = local;
     pair->remote = remote;
     
-    SetNonBlocking(local->GetFd());
-    SetNonBlocking(remote->GetFd());
-
-    proxy->AddSocketPair(pair);
-
-    struct event local_ev, remote_ev;
-    event_assign(&pair->local_ev, proxy->GetBase(), local->GetFd(), EV_READ|EV_PERSIST, OnReadClient, pair);
-    event_assign(&pair->remote_ev, proxy->GetBase(), remote->GetFd(), EV_READ|EV_PERSIST, OnReadServer, pair);
-    event_add(&pair->local_ev, NULL);
-    event_add(&pair->remote_ev, NULL);
+    pair->local->SetNonBlocking();
+    pair->remote->GetSocket()->SetNonBlocking();
+    
+    event_assign(&pair->local->GetEvent(), proxy->GetBase(), local->GetFd(), EV_READ|EV_PERSIST, OnReadClient, pair);
+    event_assign(&pair->remote->GetSocket()->GetEvent(), proxy->GetBase(), remote->GetFd(), EV_READ|EV_PERSIST, OnReadServer, pair);
+    event_add(&pair->local->GetEvent(), NULL);
+    event_add(&pair->remote->GetSocket()->GetEvent(), NULL);
+    
+    Proxy::AddSocketPair(pair);
 }
 
+Proxy::SocketPairMap Proxy::m_pair;
+
 Proxy::Proxy()
-    :m_port(0), m_client(NULL), m_server(NULL), m_evBase(NULL)
+    :m_port(0), m_server(NULL), m_evBase(NULL)
 #ifdef HAS_OPENSSL
     , m_sslCtx(NULL)
 #endif // HAS_OPENSSL
@@ -162,11 +170,6 @@ Proxy::Proxy()
 
 Proxy::~Proxy()
 {
-    if (m_client)
-    {
-        delete m_client;
-        m_client = NULL;
-    }
     if (m_server)
     {
         delete m_server;
@@ -178,8 +181,10 @@ Proxy::~Proxy()
     {
         if (it->second != NULL)
         {
-            delete it->second->local;
-            delete it->second->remote;
+            if (it->second->local)
+                delete it->second->local;
+            if (it->second->remote)
+                delete it->second->remote;
             delete it->second;
         }
     }
@@ -191,20 +196,20 @@ int Proxy::Init()
     m_sslCtx = new SslContext();
     if (m_sslCtx == NULL)
     {
-        printf("new ssl context failed.\n");
+        PrintLog(g_logFp, "new ssl context failed.\n");
         return -1;
     }
 
     if (m_sslCtx->Init() < 0)
     {
-        printf("initialize ssl context failed.\n");
+        PrintLog(g_logFp, "initialize ssl context failed.\n");
         return -1;
     }
     
     m_server = new ServerSocket(m_port, m_sslCtx->GetServCtx());
     if (m_server == NULL)
     {
-        printf("new server ssl socket failed.\n");
+        PrintLog(g_logFp, "new server ssl socket failed.\n");
         return -1;
     }
 
@@ -212,16 +217,17 @@ int Proxy::Init()
     m_server = new ServerSocket(m_port);
     if (m_server == NULL)
     {
-        printf("new server ssl socket failed.\n");
+        PrintLog(g_logFp, "new server ssl socket failed.\n");
         return -1;
     }
 #endif // HAS_OPENSSL
 
     if (m_server->Listen() < 0)
     {
-        printf("server listen failed.\n");
+        PrintLog(g_logFp, "server listen failed.\n");
         return -1;
     }
+    return 0;
 }
 
 void Proxy::Run(int port)
@@ -241,14 +247,14 @@ void Proxy::Run(int port)
     m_evBase = event_base_new();
     if (m_evBase == NULL)
     {
-        printf("event_base_new failed\n");
+        PrintLog(g_logFp, "event_base_new failed\n");
         return;
     }
     
     accept_event = event_new(m_evBase, m_server->GetFd(), EV_READ|EV_PERSIST, OnAccept, this);
 	if (!accept_event || event_add(accept_event, NULL) < 0)
     {
-		printf("Could not create/add a accept event!\n");
+		PrintLog(g_logFp, "Could not create/add a accept event!\n");
         event_base_free(m_evBase);
         m_evBase = NULL;
 		return;
@@ -257,7 +263,7 @@ void Proxy::Run(int port)
 	signal_event = evsignal_new(m_evBase, SIGINT, SignalCallBack, (void *)this);
 	if (!signal_event || event_add(signal_event, NULL) < 0)
     {
-		printf("Could not create/add a accept event!\n");
+		PrintLog(g_logFp, "Could not create/add a accept event!\n");
 	    event_free(accept_event);
         event_base_free(m_evBase);
         m_evBase = NULL;
@@ -269,7 +275,7 @@ void Proxy::Run(int port)
 	event_free(signal_event);
     event_base_free(m_evBase);
     m_evBase = NULL;
-    printf("stop base dispatch.\n");
+    PrintLog(g_logFp, "stop base dispatch.\n");
 }
 
 void Proxy::Stop()
@@ -301,4 +307,26 @@ void Proxy::AddSocketPair(SocketPair *pair)
     {
         m_pair[key] = pair;
     }
+}
+
+void Proxy::DelSocketPair(SocketPair * pair)
+{
+    if (pair == NULL)
+    {
+        return;
+    }
+
+    char key[32] = {0};
+    snprintf(key, sizeof(key), "%d+%d", pair->local->GetFd(), pair->remote->GetFd());
+    SocketPairMap::iterator it = m_pair.find(key);
+    if (it != m_pair.end())
+    {
+        m_pair.erase(it);
+    }
+    event_del(&pair->local->GetEvent());
+    event_del(&pair->remote->GetSocket()->GetEvent());
+    delete pair->local;
+    delete pair->remote;
+    delete pair;
+    pair = NULL;
 }

@@ -25,6 +25,7 @@ public:
     int GetFd() { return m_sock->GetFd(); }
     string &GetHost() { return m_host; }
     int GetPort() { return m_port; }
+    Socket *GetSocket() { return m_sock; }
     
 private:
     Socket      *m_sock;

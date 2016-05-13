@@ -2,6 +2,8 @@
 #include "sock_ssl.h"
 #include "sock_tcp.h"
 
+extern FILE *g_logFp;
+extern void PrintLog(FILE *fp, const char *format...);
 
 #ifdef HAS_OPENSSL
 ServerSocket::ServerSocket(int port, SSL_CTX * sslCtx)
@@ -25,7 +27,7 @@ int ServerSocket::Listen()
     m_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (m_fd < 0)
     {
-        printf("initialize socket failed. error: %s\n", strerror(errno));
+        PrintLog(g_logFp, "initialize socket failed. error: %s\n", strerror(errno));
         return -1;
     }
     
@@ -41,14 +43,14 @@ int ServerSocket::Listen()
     int ret = bind(m_fd, (struct sockaddr*)&sa_serv, sizeof(sa_serv));
     if (ret < 0)
     {
-        printf("bind socket failed. error: %s\n", strerror(errno));
+        PrintLog(g_logFp, "bind socket failed. error: %s\n", strerror(errno));
         return -1;
     }
 
     ret = listen(m_fd, 5);
     if (ret < 0)
     {
-        printf("listen socket failed. error: %s\n", strerror(errno));
+        PrintLog(g_logFp, "listen socket failed. error: %s\n", strerror(errno));
         return -1;
     }
     return 0;
@@ -62,44 +64,32 @@ Socket * ServerSocket::Accept()
     int fd = accept(m_fd, (struct sockaddr*)&sa_cli, (socklen_t*)&client_len);
     if (fd < 0)
     {
-        printf("accept socket failed. error: %s\n", strerror(errno));
+        PrintLog(g_logFp, "accept socket failed. error: %s\n", strerror(errno));
         return NULL;
     }
 
-    printf("accept client fd %d[%s:%d]\n", fd, inet_ntoa(sa_cli.sin_addr), ntohs(sa_cli.sin_port));
+    PrintLog(g_logFp, "accept client fd %d[%s:%d]\n", fd, inet_ntoa(sa_cli.sin_addr), ntohs(sa_cli.sin_port));
 
     Socket *sock = NULL;
 #ifdef HAS_OPENSSL
     if (m_sslCtx != NULL)
     {
-        sock = new SslSocket(fd, m_sslCtx);
+        sock = new SslSocket(fd, SOCKET_SSL_SERVER, m_sslCtx);
     }
     else
     {
-        sock = new TcpSocket(fd);
+        sock = new TcpSocket(fd, SOCKET_TCP_SERVER);
     }
 #else
-    sock = new TcpSocket(fd);
+    sock = new TcpSocket(fd, SOCKET_TCP_SERVER);
 #endif // HAS_OPENSSL
 
     if (sock == NULL)
     {
-        printf("new socket failed.\n");
+        PrintLog(g_logFp, "new socket failed.\n");
         close(fd);
         return NULL;
     }
-    
-#ifdef HAS_OPENSSL
-    if (m_sslCtx)
-    {
-        int ret = SSL_accept(sock->GetSsl());
-        if (ret < 0)
-        {
-            delete sock;
-            return NULL;
-        }
-    }
-#endif
 
     return sock;
 }
