@@ -1,15 +1,43 @@
 #include <signal.h>
+#include <assert.h>
 #include "proxy.h"
 
-#define DEFAULT_BUFFER_SIZE 65535
+#define DEFAULT_BUFFER_SIZE 10240
+#define DEFUALT_REPLACE_BUFFER_SIZE 11264
 
 extern string g_proxy_host;
 extern int g_proxy_port;
 extern string g_data_file;
 extern FILE * g_logFp;
 extern FILE *g_dataFp;
+extern string g_replaceServ;
+extern string g_replaceUE;
+extern int g_bind_port;
 
 extern void PrintLog(FILE *fp, const char *format...);
+extern void PrintDatetime(FILE *fp);
+
+static void ReplaceString(const char *input, string &output, const char *src, const char *des)
+{
+    assert(input && src && des);
+    int srclen = strlen(src);
+    const char *begin = input;
+    const char *pos = NULL;
+    while (true)
+    {
+        if ((pos = strstr(begin, src)) != NULL)
+        {
+            output.append(begin, pos - begin);
+            output.append(des);
+        }
+        else
+        {
+            output.append(begin);
+            break;
+        }
+        begin = pos + srclen;
+    }
+}
 
 static void OnReadServer(int fd, short event, void* arg)
 {
@@ -19,29 +47,61 @@ static void OnReadServer(int fd, short event, void* arg)
         return;
     }
 
+    struct sockaddr_in servAddr = pair->remote->GetSocket()->GetRemoteAddr();
+    struct sockaddr_in proxyAddr = pair->remote->GetSocket()->GetLocalAddr();
+    struct sockaddr_in ueAddr = pair->local->GetRemoteAddr();
+    string servIp = inet_ntoa(servAddr.sin_addr);
+    int servPort = ntohs(servAddr.sin_port);
+    string proxyIp = inet_ntoa(proxyAddr.sin_addr);
+    int proxyPort = ntohs(proxyAddr.sin_port);
+    string ueIp = inet_ntoa(ueAddr.sin_addr);
+    int uePort = ntohs(ueAddr.sin_port);
+    
     char data[DEFAULT_BUFFER_SIZE] = {0};
     int len = pair->remote->Recv(data, DEFAULT_BUFFER_SIZE - 1);
 
     if (len <= 0)
     {
+        PrintLog(g_logFp, "[%s:%d->%s:%d] [OnReadServer] Recv Server error.\n",
+            servIp.c_str(), servPort, proxyIp.c_str(), proxyPort);
         Proxy::DelSocketPair(pair);
         return;
     }
 
+    
     if (g_dataFp)
     {
-        fprintf(g_dataFp, "recv remote:\n");
+        PrintDatetime(g_dataFp);
+        fprintf(g_dataFp, "[%s:%d->%s:%d] recv from Server =============================>>\n",
+            servIp.c_str(), servPort, proxyIp.c_str(), proxyPort);
         fwrite(data, len, 1, g_dataFp);
+        fprintf(g_dataFp, "\n\n");
         fflush(g_dataFp);
     }
-    PrintLog(g_logFp, "recv remote: %s\n", data);
-    
-    len = pair->local->Send(data, len);
+    PrintLog(g_logFp, "[%s:%d->%s:%d] recv from Server: len %d\n",
+        servIp.c_str(), servPort, proxyIp.c_str(), proxyPort, len);
+
+    string output;
+    ReplaceString(data, output, g_replaceServ.c_str(), g_replaceUE.c_str());
+
+    PrintDatetime(g_dataFp);
+    fprintf(g_dataFp, "[%s:%d->%s:%d] Send Replace to UE ============ %s -> %s ============>>\n",
+        proxyIp.c_str(), proxyPort, ueIp.c_str(), uePort, g_replaceServ.c_str(), g_replaceUE.c_str());
+    fwrite(output.c_str(), output.length(), 1, g_dataFp);
+    fprintf(g_dataFp, "\n\n");
+    fflush(g_dataFp);
+
+    len = pair->local->Send(output.c_str(), output.length());
     if (len <= 0)
     {
+        PrintLog(g_logFp, "[%s:%d->%s:%d] [OnReadServer] Send to UE error.\n",
+            proxyIp.c_str(), proxyPort, ueIp.c_str(), uePort);
         Proxy::DelSocketPair(pair);
         return;
     }
+    
+    PrintLog(g_logFp, "[%s:%d->%s:%d] [OnReadClient] Send to UE OK: len %d.\n",
+        proxyIp.c_str(), proxyPort, ueIp.c_str(), uePort, len);
 }
 
 static void OnReadClient(int fd, short event, void* arg)
@@ -51,30 +111,62 @@ static void OnReadClient(int fd, short event, void* arg)
     {
         return;
     }
+    
+    struct sockaddr_in servAddr = pair->remote->GetSocket()->GetRemoteAddr();
+    struct sockaddr_in proxyAddr = pair->remote->GetSocket()->GetLocalAddr();
+    struct sockaddr_in ueAddr = pair->local->GetRemoteAddr();
+    string servIp = inet_ntoa(servAddr.sin_addr);
+    int servPort = ntohs(servAddr.sin_port);
+    string proxyIp = inet_ntoa(proxyAddr.sin_addr);
+    int proxyPort = ntohs(proxyAddr.sin_port);
+    string ueIp = inet_ntoa(ueAddr.sin_addr);
+    int uePort = ntohs(ueAddr.sin_port);
+
 
     char data[DEFAULT_BUFFER_SIZE] = {0};
     int len = pair->local->Recv(data, DEFAULT_BUFFER_SIZE - 1);
 
     if (len <= 0)
     {
+        PrintLog(g_logFp, "[%s:%d->%s:%d] [OnReadClient] Recv UE error.\n",
+            ueIp.c_str(), uePort, proxyIp.c_str(), g_bind_port);
         Proxy::DelSocketPair(pair);
         return;
     }
     
     if (g_dataFp)
     {
-        fprintf(g_dataFp, "recv local:\n");
+        PrintDatetime(g_dataFp);
+        fprintf(g_dataFp, "[%s:%d->%s:%d] recv from UE =================================>>:\n",
+            ueIp.c_str(), uePort, proxyIp.c_str(), proxyPort);
         fwrite(data, len, 1, g_dataFp);
+        fprintf(g_dataFp, "\n\n");
         fflush(g_dataFp);
     }
-    PrintLog(g_logFp, "recv local: %s\n", data);
+    PrintLog(g_logFp, "[%s:%d->%s:%d] recv from UE OK: len %d\n",
+        ueIp.c_str(), uePort, proxyIp.c_str(), g_bind_port, len);
 
-    len = pair->remote->Send(data, len);
+    string output;
+    ReplaceString(data, output, g_replaceUE.c_str(), g_replaceServ.c_str());
+
+    PrintDatetime(g_dataFp);
+    fprintf(g_dataFp, "[%s:%d->%s:%d] Send Replace to Server ============ %s -> %s ==============>>\n",
+        proxyIp.c_str(), proxyPort, servIp.c_str(), servPort, g_replaceUE.c_str(), g_replaceServ.c_str());
+    fwrite(output.c_str(), output.length(), 1, g_dataFp);
+    fprintf(g_dataFp, "\n\n");
+    fflush(g_dataFp);
+
+    len = pair->remote->Send(output.c_str(), output.length());
     if (len <= 0)
     {
+        PrintLog(g_logFp, "[%s:%d->%s:%d] [OnReadClient] Send to Server error.\n",
+            proxyIp.c_str(), proxyPort, servIp.c_str(), servPort);
         Proxy::DelSocketPair(pair);
         return;
     }
+    
+    PrintLog(g_logFp, "[%s:%d->%s:%d] [OnReadClient] Send to Server OK: len %d.\n",
+        proxyIp.c_str(), proxyPort, servIp.c_str(), servPort, len);
 }
 
 static void SignalCallBack(int sig, short events, void *user_data)
@@ -146,8 +238,11 @@ static void OnAccept(int fd, short event, void* arg)
     pair->local = local;
     pair->remote = remote;
     
-    pair->local->SetNonBlocking();
-    pair->remote->GetSocket()->SetNonBlocking();
+    //pair->local->SetNonBlocking();
+    //pair->remote->GetSocket()->SetNonBlocking();
+    pair->local->SetTimeout(1);
+    pair->remote->GetSocket()->SetTimeout(1);
+
     
     event_assign(&pair->local->GetEvent(), proxy->GetBase(), local->GetFd(), EV_READ|EV_PERSIST, OnReadClient, pair);
     event_assign(&pair->remote->GetSocket()->GetEvent(), proxy->GetBase(), remote->GetFd(), EV_READ|EV_PERSIST, OnReadServer, pair);

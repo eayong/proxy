@@ -1,8 +1,11 @@
 #include <getopt.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdlib.h> 
-#include <limits.h> 
+#include <stdlib.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <signal.h>
+#include <sys/resource.h>
 
 #include "proxy.h"
 #include "BugReport.h"
@@ -14,11 +17,13 @@ string g_key_path;
 string g_data_file = "./data.txt";
 FILE * g_dataFp = NULL;
 FILE * g_logFp = NULL;
+string g_replaceServ = "12.194.127.36:5061;encoded-parm";
+string g_replaceUE = "172.16.71.190:5061;encoded-parm";
 
-#define LOG_FILE "error.log"
+#define LOG_FILE "./error.log"
 
 int g_bind_port = 80;
-bool g_deamon = false;
+bool g_daemon = false;
 
 static void usage()
 {
@@ -30,41 +35,99 @@ static void usage()
     printf("\t-k --key      : proxy crypto key.\n");
     printf("\t-c --cert     : proxy signature cert.\n");
     printf("\t-f --file     : record recv data file path.\n");
+    printf("\t-d --daemon   : run as daemon.\n");
+    printf("\t-s --server   : replace string from server package.\n");
+    printf("\t-u --ue       : replace string to UE package.\n");
 }
 
-static int Deamon(void)
+static int Daemon()
 {
-    pid_t pid;
-    if ((pid = fork()) < 0)
+	int fd0, fd1, fd2;
+	pid_t pid;
+	struct rlimit rl;
+	unsigned i = 0;
+	struct sigaction sa;
+
+	umask(0);
+
+	if (getrlimit(RLIMIT_NOFILE, &rl) < 0)
+	{
+		return -1;
+	}
+
+	if ((pid = fork()) < 0)
+	{
+		return -1;
+	}
+	else if (pid != 0)//parent
+	{
+		exit(0);
+	}
+
+	setsid();
+
+	sa.sa_handler = SIG_IGN;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;
+	if (sigaction(SIGHUP, &sa, NULL) < 0)
+	{
+		return -1;
+	}
+    if (sigaction(SIGPIPE, &sa, NULL) < 0)
     {
-        return -1; //fork失败
+        return -1;
     }
-    else if (pid > 0)
+
+	if ((pid = fork()) < 0)
+	{
+		return -1;
+	}
+	else if (pid != 0) //parent
+	{
+		exit(0);
+	}
+	
+	if (rl.rlim_max == RLIM_INFINITY)
+	{
+		rl.rlim_max = 1024;
+	}
+
+	for (i = 0; i < rl.rlim_max; ++i)
+	{
+		close(i);
+	}
+
+	fd0 = open("/dev/null", O_RDWR);
+	if (fd0 < 0)
+	{
+		return -1;
+	}
+
+	fd1 = dup(0);
+	fd2 = dup(0);
+
+	if (fd0 != 0 || fd1 != 1 || fd2 != 2)
+	{
+		return -1;
+	}
+
+	return 0;
+}
+
+void SetSignal()
+{
+    struct sigaction sa;
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    if (sigaction(SIGHUP, &sa, NULL) < 0)
     {
-        exit(0);    //是父进程，结束父进程
+        return;
     }
-    //是第一子进程，后台继续执行
-    setsid();//第一子进程成为新的会话组长和进程组长
-    
-    //并与控制终端分离
-    if ((pid = fork()) < 0)
+    if (sigaction(SIGPIPE, &sa, NULL) < 0)
     {
-        return -1;  //fork失败，退出
+        return;
     }
-    else if (pid > 0)
-    {
-        exit(0);    //是第一子进程，结束第一子进程
-    }
-    
-    //是第二子进程，继续
-    //第二子进程不再是会话组长
-    
-    close(0);
-    close(1);
-    close(2);
-    chdir("/tmp");  //改变工作目录到/tmp
-    umask(0);   //重设文件创建掩模
-    return 0;
 }
 
 void PrintLog(FILE *fp, const char *format...)
@@ -75,23 +138,30 @@ void PrintLog(FILE *fp, const char *format...)
     char buffer[2048] = {0};
     len = vsnprintf(buffer, sizeof(buffer), format, ap);
     buffer[len] = 0;
+    char timebuf[256] = {0};
+    struct tm tmv;
+    time_t timev = time(NULL);
+    localtime_r(&timev, &tmv);
+    asctime_r(&tmv, timebuf);
+    fprintf(fp, "%s", timebuf);
     fprintf(fp, "%s", buffer);
     va_end(ap);
     fflush(fp);
 }
 
+void PrintDatetime(FILE *fp)
+{
+    char timebuf[256] = {0};
+    struct tm tmv;
+    time_t timev = time(NULL);
+    localtime_r(&timev, &tmv);
+    asctime_r(&tmv, timebuf);
+    fprintf(fp, "%s", timebuf);
+}
+
 int main(int argc, char **argv)
 {
-    BugReportRegister(argv[0], ".", NULL, NULL);
-
-    g_logFp = fopen(LOG_FILE, "w");
-    if (g_logFp == NULL)
-    {
-        printf("can't open log file %s\n", LOG_FILE);
-        return -1;
-    }
-    
-    const char* short_options = "b:a:p:k:c:f:hd";
+    const char* short_options = "b:a:p:k:c:f:s:u:hd";
     struct option long_options[] = {
         { "bind",   1,  NULL,   'b' },
         { "addr",   1,  NULL,   'a' },
@@ -99,7 +169,9 @@ int main(int argc, char **argv)
         { "key",    1,  NULL,   'k' },
         { "cert",   1,  NULL,   'c' },
         { "file",   1,  NULL,   'f' },
-        { "deamon", 0,  NULL,   'd' },
+        { "daemon", 0,  NULL,   'd' },
+        { "server", 0,  NULL,   's' },
+        { "ue",     0,  NULL,   'u' },
         { "help",   0,  NULL,   'h' },
         { 0, 0, 0, 0},
     };
@@ -127,20 +199,36 @@ int main(int argc, char **argv)
         case 'f':
             g_data_file.assign(optarg);
             break;
+        case 's':
+            g_replaceServ.assign(optarg);
+            break;
+        case 'u':
+            g_replaceUE.assign(optarg);
+            break;
         case 'd':
-            g_deamon = true;
+            g_daemon = true;
             break;
         case 'h':
             usage();
             return 0;
         default:
-            PrintLog(g_logFp, "unkown type %c\n", c);
+            printf("unkown type %c\n", c);
             break;
         }
     }
 
-    if (g_deamon && Deamon() < 0)
+    if (g_daemon && Daemon() < 0)
     {
+        return -1;
+    }
+
+    BugReportRegister(argv[0], ".", NULL, NULL);
+    SetSignal();
+
+    g_logFp = fopen(LOG_FILE, "w");
+    if (g_logFp == NULL)
+    {
+        printf("can't open log file %s\n", LOG_FILE);
         return -1;
     }
 
@@ -153,7 +241,7 @@ int main(int argc, char **argv)
         if (g_dataFp == NULL)
         {
             PrintLog(g_logFp, "can't open log file %s\n", g_data_file.c_str());
-            fclose(g_dataFp);
+            fclose(g_logFp);
             return -1;
         }
     }

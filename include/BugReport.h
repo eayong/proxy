@@ -43,9 +43,9 @@ typedef void (*pf_exit)(const int sig);
 
 
 // 进程名称
-static char BR_process_name[PATH_MAX] = "";
+static char BR_process_name[PATH_MAX] = "bugreport";
 // 日志路径
-static char BR_log_dir_path[PATH_MAX] = "/home/petra/bugreport";
+static char BR_log_dir_path[PATH_MAX] = ".";
 
 static pf_info BR_pf_info;
 static pf_exit BR_pf_exit;

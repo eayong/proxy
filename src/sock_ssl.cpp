@@ -101,11 +101,13 @@ int SslSocket::Recv(char *data, uint32_t len)
             nRet = SSL_get_error(m_pSsl, nRet);
             if(nRet == SSL_ERROR_WANT_WRITE || nRet == SSL_ERROR_WANT_READ)
             {
+                PrintLog(g_logFp, "SSL_read block, Msg:[%s]\n", nRet, ERR_error_string(ERR_get_error(), NULL));
                 nRet = 0;
             }
             else
             {
                 PrintLog(g_logFp, "SSL_read failed %d, Msg:[%s]\n", nRet, ERR_error_string(ERR_get_error(), NULL));
+                return -1;
             }
         }
         else
@@ -115,53 +117,77 @@ int SslSocket::Recv(char *data, uint32_t len)
         return nRet;
     }
 
-    while(uWantRead > 0)
+//    while(uWantRead > 0)
+//    {
+//        if(uReadCount + uWantRead > len)
+//        {
+//            PrintLog(g_logFp, "SSL_read Warnning too many data to read, bufsize: %d, to readsize: %d\n",
+//                len, uReadCount + uWantRead);
+//            break;
+//        }
+
+//        nRet = SSL_read(m_pSsl, (((uint8_t*)data)+uReadCount), uWantRead);
+//        if(nRet <= 0)
+//        {
+//            nRet = SSL_get_error(m_pSsl, nRet);
+//            if(nRet == SSL_ERROR_WANT_WRITE || nRet == SSL_ERROR_WANT_READ)
+//            {
+//                break;
+//            }
+//            else if(nRet == SSL_ERROR_ZERO_RETURN)
+//            {
+//                /*error*/
+//                PrintLog(g_logFp, "^--^TLS connection closed.\n");
+//                return -1;
+//            }
+//            else
+//            {
+//                /*error*/
+//                PrintLog(g_logFp, "SSL_read failed %d, Msg:[%s]\n", nRet, ERR_error_string(ERR_get_error(), NULL));
+//                return -1;
+//            }
+//        }
+//        else
+//        {
+//            uReadCount += (uint32_t)nRet;
+//        }
+
+//        if((nRet = SSL_pending(m_pSsl)) > 0)
+//        {
+//            uWantRead = nRet;
+//        }
+//        else
+//        {
+//            uWantRead = 0;
+//        }
+//    }
+
+//    return uReadCount;
+
+    nRet = SSL_read(m_pSsl, data, len);
+    if(nRet <= 0)
     {
-        if(uReadCount + uWantRead > len)
+        nRet = SSL_get_error(m_pSsl, nRet);
+        if(nRet == SSL_ERROR_WANT_WRITE || nRet == SSL_ERROR_WANT_READ)
         {
-            PrintLog(g_logFp, "SSL_read Warnning too many data to read, bufsize: %d, to readsize: %d\n",
-                len, uReadCount + uWantRead);
-            break;
+            PrintLog(g_logFp, "^--^TLS read block. %s\n", ERR_error_string(ERR_get_error(), NULL));
+            return -1;
         }
-
-        nRet = SSL_read(m_pSsl, (((uint8_t*)data)+uReadCount), uWantRead);
-        if(nRet <= 0)
+        else if(nRet == SSL_ERROR_ZERO_RETURN)
         {
-            nRet = SSL_get_error(m_pSsl, nRet);
-            if(nRet == SSL_ERROR_WANT_WRITE || nRet == SSL_ERROR_WANT_READ)
-            {
-                break;
-            }
-            else if(nRet == SSL_ERROR_ZERO_RETURN)
-            {
-                /*error*/
-                PrintLog(g_logFp, "^--^TLS connection closed.\n");
-                return -1;
-            }
-            else
-            {
-                /*error*/
-                PrintLog(g_logFp, "SSL_read failed %d, Msg:[%s]\n", nRet, ERR_error_string(ERR_get_error(), NULL));
-                return -1;
-            }
+            /*error*/
+            PrintLog(g_logFp, "^--^TLS connection closed.\n");
+            return -1;
         }
         else
         {
-            uReadCount += (uint32_t)nRet;
-        }
-
-        if((nRet = SSL_pending(m_pSsl)) > 0)
-        {
-            uWantRead = nRet;
-        }
-        else
-        {
-            uWantRead = 0;
+            /*error*/
+            PrintLog(g_logFp, "SSL_read failed %d, Msg:[%s]\n", nRet, ERR_error_string(ERR_get_error(), NULL));
+            return -1;
         }
     }
 
-    return uReadCount;
-
+    return nRet;
 }
 
 int SslSocket::Handshake()

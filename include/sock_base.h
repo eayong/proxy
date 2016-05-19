@@ -55,8 +55,12 @@ public:
     void SetStatus(SocketStatus status) { m_status = status; }
     void Close() { close(m_fd); m_fd = -1; }
     int SetNonBlocking(bool blocking = true);
-
+    int SetTimeout(int sec);
     int GetFd() { return m_fd; }
+    bool IsValibe() { return m_status == SOCKET_CONNECTED; }
+
+    struct sockaddr_in & GetLocalAddr() { return m_localAddr; }
+    struct sockaddr_in & GetRemoteAddr() { return m_remoteAddr; }
 
 #ifdef HAS_OPENSSL
     SSL *GetSsl() { return m_pSsl; }
@@ -66,10 +70,15 @@ public:
     struct event &GetEvent() { return m_ev; }
 #endif // HAS_LIBEVENT
 
+private:
+    int InitAddr();
+
 protected:
-    int             m_fd;
-    int             m_type;
-    SocketStatus    m_status;
+    int                 m_fd;
+    int                 m_type;
+    SocketStatus        m_status;
+    struct sockaddr_in  m_localAddr;
+    struct sockaddr_in  m_remoteAddr;
     
 #ifdef HAS_OPENSSL
     SSL     *m_pSsl;
